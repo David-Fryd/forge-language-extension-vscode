@@ -36,9 +36,8 @@ function showFileWithOpts(filePath: string, line: number | null, column: number 
 	}
 }
 
-function sendEvalErrors(text: string, fileURI: vscode.Uri, diagnosticCollectionForgeEval: DiagnosticCollection) {
+function sendEvalErrors(textLines: string[], fileURI: vscode.Uri, diagnosticCollectionForgeEval: DiagnosticCollection) {
 	let matcher: RegExpMatchArray | null;
-	const textLines = text.split(/[\n\r]/);
 	for (let i = 0; i < textLines.length; i++) {
 		matcher = matchForgeError(textLines[i]);
 		if (matcher) {
@@ -49,7 +48,6 @@ function sendEvalErrors(text: string, fileURI: vscode.Uri, diagnosticCollectionF
 	}
 
 	if (matcher) {
-		forgeOutput.appendLine(text);
 
 		const line = parseInt(matcher[2]) - 1;
 		const col = parseInt(matcher[3]) - 1;
@@ -91,6 +89,8 @@ function killRacket(manual: boolean) {
 	if (racket) {
 		racket.kill();
 		racketKilledManually = manual;
+		// this is only to inform the user, the process could still be waiting to exit
+		forgeOutput.appendLine('Forge process terminated.');
 	}
 	racket = null;
 }
@@ -199,16 +199,14 @@ export function activate(context: ExtensionContext) {
 		racket.on('exit', (code: string) => {
 			if (!racketKilledManually) {
 				if (myStderr !== '') {
-					// forgeOutput.appendLine(myStderr);
-					// console.log(myStderr);
-					sendEvalErrors(myStderr, fileURI, forgeEvalDiagnostics);
+					forgeOutput.appendLine(myStderr);
+					sendEvalErrors(myStderr.split(/[\n\r]/), fileURI, forgeEvalDiagnostics);
 				} else {
 					showFileWithOpts(fileURI.fsPath, null, null);
-					forgeOutput.appendLine('Finished running.');
 				}
+				forgeOutput.appendLine('Finished running.');
 			} else {
 				showFileWithOpts(fileURI.fsPath, null, null);
-				forgeOutput.appendLine('Forge process terminated.');
 			}
 			racketKilledManually = false;
 		});
