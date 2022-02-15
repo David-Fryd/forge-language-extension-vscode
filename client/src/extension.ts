@@ -13,7 +13,16 @@ import { ChildProcess, spawn } from 'child_process';
 let client: LanguageClient;
 
 const forgeOutput = vscode.window.createOutputChannel('Forge Output');
-let racket: ChildProcess | null;
+let racketGlobal: ChildProcess | null;
+
+function getRacketPath(): string {
+	const config = vscode.workspace.getConfiguration("forgeLanguageServer").get("racketPath");
+	if (config !== undefined) {
+		// console.log(config);
+		return config.toString();
+	}
+	return "racket";
+}
 
 function matchForgeError(line: string): RegExpMatchArray | null {
 	const forgeFileReg = /[\\/]*?([^\\/\n\s]*\.frg):(\d+):(\d+):?/;  // assumes no space in filename
@@ -84,15 +93,14 @@ function subscribeToDocumentChanges(context: vscode.ExtensionContext, myDiagnost
 
 }
 
-let racketKilledManually = false;
-function killRacket(manual: boolean) {
-	if (racket) {
-		racket.kill();
-		racketKilledManually = manual;
-		// this is only to inform the user, the process could still be waiting to exit
-		forgeOutput.appendLine('Forge process terminated.');
+// let racketKilledManually = false;
+function killRacket(r: ChildProcess) {
+	if (r) {
+		if (r == racketGlobal) {
+			forgeOutput.appendLine('Terminating the current Forge process ...');
+		}
+		r.kill();
 	}
-	racket = null;
 }
 
 export function activate(context: ExtensionContext) {
@@ -151,6 +159,8 @@ export function activate(context: ExtensionContext) {
 		// always auto-save before any run
 		vscode.window.activeTextEditor.document.save();
 
+		const racketPath = getRacketPath();
+
 		// // The code you place here will be executed every time your command is executed
 		const fileURI = vscode.window.activeTextEditor.document.uri;
 		const filepath = fileURI.fsPath;
@@ -162,21 +172,28 @@ export function activate(context: ExtensionContext) {
 			return;
 		}
 
-		// if existing racket, kill it first
-		killRacket(false);
+		// if existing global racket, kill it first
+		killRacket(racketGlobal);
+		// racketGlobal = null;
 
 		forgeOutput.clear();
 		forgeOutput.show();
 
-		//Write to output.
-		forgeOutput.appendLine(`Running file "${filepath}" ...`);
-
-		racket = spawn('racket', [`"${filepath}"`], { shell: true });
+		// local racket
+		const racket = spawn(`"${racketPath}"`, [`"${filepath}"`], { shell: true });
 		if (!racket) {
 			console.error('Cannot spawn Racket process');
 		}
+		racketGlobal = racket;
+
+		//Write to output.
+		forgeOutput.appendLine(`Running file "${filepath}" ...`);
 
 		racket.stdout.on('data', (data: string) => {
+			if (racket != racketGlobal) {
+				console.log("I got some stdout but I am not the global racket");
+				return;
+			}
 			// forgeOutput.appendLine(data);
 			const lst = data.toString().split(/[\n]/);
 			// console.log(lst, lst.length);
@@ -192,28 +209,36 @@ export function activate(context: ExtensionContext) {
 
 		let myStderr = '';
 		racket.stderr.on('data', (err: string) => {
+			if (racket != racketGlobal) {
+				console.log("I got err but I am not the global racket");
+				return;
+			}
 			// forgeOutput.appendLine(err);
 			myStderr += err;
 		});
 
 		racket.on('exit', (code: string) => {
-			if (!racketKilledManually) {
-				if (myStderr !== '') {
-					forgeOutput.appendLine(myStderr);
-					sendEvalErrors(myStderr.split(/[\n\r]/), fileURI, forgeEvalDiagnostics);
-				} else {
-					showFileWithOpts(fileURI.fsPath, null, null);
-				}
-				forgeOutput.appendLine('Finished running.');
+			if (racket != racketGlobal) {
+				console.log("I exited but I am not the global racket");
+				return;
+			}
+
+			if (myStderr !== '') {
+				forgeOutput.appendLine(myStderr);
+				sendEvalErrors(myStderr.split(/[\n\r]/), fileURI, forgeEvalDiagnostics);
+				forgeOutput.appendLine('Forge exited.');
 			} else {
 				showFileWithOpts(fileURI.fsPath, null, null);
+				forgeOutput.appendLine('Finished running.');
 			}
-			racketKilledManually = false;
+			// forgeOutput.appendLine('Finished running.');
+
+			racketGlobal = null;
 		});
 	});
 
 	const stopRun = vscode.commands.registerCommand('forge.stopRun', () => {
-		killRacket(true);
+		killRacket(racketGlobal);
 	});
 
 	context.subscriptions.push(runFile, stopRun, forgeEvalDiagnostics);
@@ -267,6 +292,6 @@ export function deactivate(): Thenable<void> | undefined {
 		return undefined;
 	}
 	// kill racket process
-	killRacket(false);
+	killRacket(racketGlobal);
 	return client.stop();
 }
